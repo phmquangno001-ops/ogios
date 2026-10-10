@@ -1,117 +1,26 @@
-name: Build iOS IPA
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
-
-jobs:
-  build-ipa:
-    name: Build & Package IPA
-    runs-on: macos-14
-    permissions:
-      contents: write
-    
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Select Xcode Version
+      - name: Install CocoaPods Dependencies
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcodebuild -version
-
-      - name: Setup Signing Certificate & Provisioning Profile
-        run: |
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          
-          # Copy mobileprovision
-          if [ -f "ci_certs/cert.mobileprovision" ]; then
-            cp "ci_certs/cert.mobileprovision" ~/Library/MobileDevice/Provisioning\ Profiles/
-          elif [ -f "certificate 2/cert.mobileprovision" ]; then
-            cp "certificate 2/cert.mobileprovision" ~/Library/MobileDevice/Provisioning\ Profiles/
-          fi
-
-          # Setup Keychain
-          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
-          security create-keychain -p "buildpass" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "buildpass" $KEYCHAIN_PATH
-
-          P12_PATH=""
-          if [ -f "ci_certs/cert.p12" ]; then
-            P12_PATH="ci_certs/cert.p12"
-          elif [ -f "certificate 2/cert.p12" ]; then
-            P12_PATH="certificate 2/cert.p12"
-          fi
-
-          if [ -n "$P12_PATH" ]; then
-            echo "Importing certificate from $P12_PATH..."
-            security import "$P12_PATH" -P "1" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-            security set-key-partition-list -S apple-tool:,apple: -s -k "buildpass" $KEYCHAIN_PATH
-            security list-keychain -d user -s $KEYCHAIN_PATH
-          else
-            echo "No p12 certificate found in ci_certs/ or certificate 2/"
+          if [ -f "Podfile" ] || [ -f "ios/Podfile" ]; then
+            if [ -d "ios" ]; then cd ios; fi
+            pod install --repo-update || pod install
+            cd "$GITHUB_WORKSPACE"
           fi
 
       - name: Build Application with Xcode
         run: |
           mkdir -p build/artifacts
-          XCODE_PROJECT="ThreeOneOSFive.xcodeproj"
-          if [ ! -d "$XCODE_PROJECT" ]; then
-            XCODE_PROJECT=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n 1)
-          fi
-          echo "Using project: $XCODE_PROJECT"
-
-          xcodebuild clean build \
-            -project "$XCODE_PROJECT" \
-            -scheme "OGIOS" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
-
-      - name: Package .IPA
-        run: |
-          mkdir -p build/ipa/Payload
-          APP_DIR=$(find build/DerivedData -name "*.app" | head -n 1)
-          if [ -z "$APP_DIR" ]; then
-            echo "Error: .app bundle not found!"
+          WORKSPACE=$(find . -maxdepth 3 -name "*.xcworkspace" | head -n 1)
+          PROJECT=$(find . -maxdepth 3 -name "*.xcodeproj" | head -n 1)
+          
+          BUILD_CMD="xcodebuild clean build -scheme OGIOS -configuration Release -sdk iphoneos -derivedDataPath build/DerivedData ONLY_ACTIVE_ARCH=NO ARCHS=arm64 CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='-'"
+          
+          if [ -n "$WORKSPACE" ]; then
+            echo "Building workspace: $WORKSPACE"
+            $BUILD_CMD -workspace "$WORKSPACE"
+          elif [ -n "$PROJECT" ]; then
+            echo "Building project: $PROJECT"
+            $BUILD_CMD -project "$PROJECT"
+          else
+            echo "No project or workspace found!"
             exit 1
           fi
-          
-          cp -R "$APP_DIR" build/ipa/Payload/
-          
-          # Copy mobileprovision to app bundle if available
-          if [ -f "ci_certs/cert.mobileprovision" ]; then
-            cp "ci_certs/cert.mobileprovision" "build/ipa/Payload/$(basename "$APP_DIR")/embedded.mobileprovision"
-          elif [ -f "certificate 2/cert.mobileprovision" ]; then
-            cp "certificate 2/cert.mobileprovision" "build/ipa/Payload/$(basename "$APP_DIR")/embedded.mobileprovision"
-          fi
-
-          cd build/ipa
-          zip -qr ../OGIOS.ipa Payload
-          cd ../..
-          echo "IPA package created successfully at build/OGIOS.ipa"
-
-      - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OGIOS-IPA
-          path: build/OGIOS.ipa
-          retention-days: 14
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "Release OGIOS v${{ github.run_number }}"
-          draft: false
-          prerelease: false
-          files: build/OGIOS.ipa
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
