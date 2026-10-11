@@ -13,8 +13,8 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     env:
-      APP_NAME: "OGIOS"
-      DEFAULT_SCHEME: "OGIOS"
+      APP_NAME: "iOS-App"
+      DEFAULT_SCHEME: "Runner"
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
